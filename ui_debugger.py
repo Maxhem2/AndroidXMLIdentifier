@@ -63,24 +63,34 @@ def get_online_devices():
     return devices
 
 
+def split_package_activity(raw_app):
+    """
+    Split package/activity and expand shorthand activity names.
+
+    Example:
+    com.example.app/.MainActivity
+
+    Becomes:
+    package = com.example.app
+    activity = com.example.app.MainActivity
+    """
+    if "/" not in raw_app:
+        return raw_app, "Unknown"
+
+    package, activity = raw_app.split("/", 1)
+
+    if activity.startswith("."):
+        activity = package + activity
+
+    return package, activity
+
+
 def get_current_active_app(device_id):
     """
     Try to get the currently focused Android app/activity.
-
-    Returns a dict like:
-    {
-        "package": "com.snapchat.android",
-        "activity": "com.snap.mushroom.MainActivity",
-        "raw": "com.snapchat.android/com.snap.mushroom.MainActivity"
-    }
     """
-    patterns = [
-        # Common format:
-        # mCurrentFocus=Window{... u0 com.package/.Activity}
+    window_patterns = [
         re.compile(r"mCurrentFocus=.*?\s([a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)"),
-
-        # Some Android versions:
-        # mFocusedApp=ActivityRecord{... com.package/.Activity ...}
         re.compile(r"mFocusedApp=.*?\s([a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)"),
     ]
 
@@ -94,7 +104,7 @@ def get_current_active_app(device_id):
             "window",
         ])
 
-        for pattern in patterns:
+        for pattern in window_patterns:
             match = pattern.search(window_result.stdout)
             if match:
                 raw_app = match.group(1)
@@ -108,7 +118,11 @@ def get_current_active_app(device_id):
     except RuntimeError:
         pass
 
-    # Fallback for newer Android versions where dumpsys window may not expose it clearly.
+    activity_patterns = [
+        re.compile(r"topResumedActivity=.*?\s([a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)"),
+        re.compile(r"mResumedActivity=.*?\s([a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)"),
+    ]
+
     try:
         activity_result = run_command([
             "adb",
@@ -120,12 +134,7 @@ def get_current_active_app(device_id):
             "activities",
         ])
 
-        fallback_patterns = [
-            re.compile(r"topResumedActivity=.*?\s([a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)"),
-            re.compile(r"mResumedActivity=.*?\s([a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)"),
-        ]
-
-        for pattern in fallback_patterns:
+        for pattern in activity_patterns:
             match = pattern.search(activity_result.stdout)
             if match:
                 raw_app = match.group(1)
@@ -146,27 +155,6 @@ def get_current_active_app(device_id):
     }
 
 
-def split_package_activity(raw_app):
-    """
-    Split package/activity and expand shorthand activity names.
-
-    Example:
-    com.snapchat.android/.MainActivity
-    becomes:
-    package = com.snapchat.android
-    activity = com.snapchat.android.MainActivity
-    """
-    if "/" not in raw_app:
-        return raw_app, "Unknown"
-
-    package, activity = raw_app.split("/", 1)
-
-    if activity.startswith("."):
-        activity = package + activity
-
-    return package, activity
-
-
 def extract_bounds(node):
     bounds_str = node.get("bounds")
     if not bounds_str:
@@ -185,7 +173,7 @@ def extract_bounds(node):
 
 
 def capture_ui_xml(device_id, local_xml_path):
-    remote_xml_path = "/sdcard/snapchat_ui.xml"
+    remote_xml_path = "/sdcard/current_ui.xml"
 
     run_command([
         "adb",
@@ -206,7 +194,6 @@ def capture_ui_xml(device_id, local_xml_path):
         str(local_xml_path),
     ])
 
-    # Best-effort cleanup on the device.
     try:
         run_command([
             "adb",
@@ -261,7 +248,6 @@ def draw_label(image, label, x, y):
     outline_thickness = 4
     text_thickness = 2
 
-    # White outline.
     cv2.putText(
         image,
         label,
@@ -273,7 +259,6 @@ def draw_label(image, label, x, y):
         cv2.LINE_AA,
     )
 
-    # Black text.
     cv2.putText(
         image,
         label,
@@ -348,6 +333,7 @@ def print_nodes(nodes):
             extra_parts.append(f'content-desc="{content_desc}"')
 
         extra = " | ".join(extra_parts)
+
         if extra:
             print(f"{number}. Bounds: {bounds} | {extra}")
         else:
@@ -366,13 +352,13 @@ def main():
 
     parser.add_argument(
         "--xml",
-        default="snapchat_ui.xml",
+        default="current_ui.xml",
         help="Output path for the pulled UI XML.",
     )
 
     parser.add_argument(
         "--screenshot",
-        default="snapchat_screenshot.png",
+        default="current_screenshot.png",
         help="Output path for the raw screenshot.",
     )
 
